@@ -18,6 +18,10 @@ const float HUMIDITY_ON = 70.0;
 const float TEMP_OFF     = 29.0;
 const float HUMIDITY_OFF = 65.0;
 
+// How long the fan stays off after the button is pressed
+// while the sensor condition is still calling for the fan
+const unsigned long FAN_RESUME_DELAY_MS = 30000;
+
 DHT dht(DHT_PIN, DHT_TYPE);
 
 bool fanOn = false;
@@ -39,6 +43,10 @@ bool manualOverride = false;
 // Automatic (hysteresis) state - what the sensors say the fan should be
 bool autoFanState = false;
 bool autoStateInitialized = false;
+
+// 30-second "paused" timer
+bool resumeTimerActive = false;
+unsigned long resumeTimerStart = 0;
 
 
 // =================================
@@ -125,18 +133,53 @@ void loop() {
       // Detect button press
       if (stableButtonState == BUTTON_PRESSED_LEVEL) {
 
-        // Enable manual priority
         manualOverride = true;
 
-        // Toggle fan
-        setFan(!fanOn);
+        if (fanOn && autoFanState) {
 
-        Serial.println("Manual Control Activated");
+          // Fan is ON because of temperature/humidity:
+          // turn it off now, and bring it back after 30 seconds
+          setFan(false);
+
+          resumeTimerActive = true;
+          resumeTimerStart = millis();
+
+          Serial.println("Manual OFF: fan will resume in 30 seconds");
+        }
+        else {
+
+          // Normal manual toggle (cancels any pending resume)
+          resumeTimerActive = false;
+          setFan(!fanOn);
+
+          Serial.println("Manual Control Activated");
+        }
       }
     }
   }
 
   lastButtonReading = reading;
+
+
+  // ---------------------------------
+  // 1b. 30-SECOND RESUME TIMER
+  // ---------------------------------
+
+  if (resumeTimerActive &&
+      (millis() - resumeTimerStart >= FAN_RESUME_DELAY_MS)) {
+
+    resumeTimerActive = false;
+    manualOverride = false;   // back to automatic mode
+
+    if (autoFanState) {
+      Serial.println("30 seconds elapsed, condition still active");
+      Serial.println("Automatic Control: Fan ON");
+      setFan(true);
+    }
+    else {
+      Serial.println("30 seconds elapsed, condition cleared: fan stays OFF");
+    }
+  }
 
 
   // ---------------------------------
@@ -208,6 +251,7 @@ void loop() {
         Serial.println("Hysteresis threshold crossed!");
 
         manualOverride = false;
+        resumeTimerActive = false;   // cancel pending resume
 
         if (autoFanState) {
           Serial.println("Temp > 30 C or Humidity > 70 %");
@@ -233,7 +277,16 @@ void loop() {
 
       }
 
-      if (manualOverride) {
+      if (resumeTimerActive) {
+        unsigned long elapsed = millis() - resumeTimerStart;
+        unsigned long remaining = (elapsed < FAN_RESUME_DELAY_MS)
+                                  ? (FAN_RESUME_DELAY_MS - elapsed) / 1000
+                                  : 0;
+        Serial.print("Fan paused, resumes in ~");
+        Serial.print(remaining);
+        Serial.println(" s");
+      }
+      else if (manualOverride) {
         Serial.println("Manual Override: ACTIVE");
       }
       else {
