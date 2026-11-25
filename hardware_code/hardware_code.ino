@@ -1,4 +1,3 @@
-
 #include <DHT.h>
 
 #define DHT_PIN     4
@@ -12,7 +11,12 @@
 #define RELAY_ON    HIGH
 #define RELAY_OFF   LOW
 
-#define TEMP_THRESHOLD 30.0
+// Hysteresis thresholds
+const float TEMP_ON     = 30.0;
+const float HUMIDITY_ON = 70.0;
+
+const float TEMP_OFF     = 29.0;
+const float HUMIDITY_OFF = 65.0;
 
 DHT dht(DHT_PIN, DHT_TYPE);
 
@@ -32,9 +36,9 @@ const unsigned long SENSOR_INTERVAL_MS = 2000;
 // Manual control variables
 bool manualOverride = false;
 
-// Temperature tracking
-bool tempStateInitialized = false;
-bool wasAboveThreshold = false;
+// Automatic (hysteresis) state - what the sensors say the fan should be
+bool autoFanState = false;
+bool autoStateInitialized = false;
 
 
 // =================================
@@ -106,9 +110,7 @@ void loop() {
   int reading = digitalRead(BUTTON_PIN);
 
   if (reading != lastButtonReading) {
-
     lastDebounceTime = millis();
-
   }
 
   if (millis() - lastDebounceTime > DEBOUNCE_MS) {
@@ -156,13 +158,11 @@ void loop() {
     Serial.print("Fan Status: ");
     Serial.println(fanOn ? "ON" : "OFF");
 
-
     if (isnan(humidity) || isnan(temperature)) {
 
       Serial.println("DHT11 sensor reading failed!");
 
     }
-
     else {
 
       Serial.print("Temperature: ");
@@ -175,77 +175,60 @@ void loop() {
 
 
       // ---------------------------------
-      // 3. AUTOMATIC TEMPERATURE CONTROL
+      // 3. AUTOMATIC CONTROL (HYSTERESIS)
       // ---------------------------------
 
-      bool aboveThreshold =
-          (temperature > TEMP_THRESHOLD);
+      bool previousAutoState = autoFanState;
+
+      if (temperature > TEMP_ON || humidity > HUMIDITY_ON) {
+        autoFanState = true;
+      }
+      else if (temperature <= TEMP_OFF && humidity <= HUMIDITY_OFF) {
+        autoFanState = false;
+      }
+      // Otherwise: inside the hysteresis band -> keep previous state
 
 
       // First valid sensor reading
-      if (!tempStateInitialized) {
+      if (!autoStateInitialized) {
 
-        wasAboveThreshold = aboveThreshold;
-        tempStateInitialized = true;
+        autoStateInitialized = true;
 
         if (!manualOverride) {
-
-          if (aboveThreshold) {
-            Serial.println("Temperature above 30 C!");
-            setFan(true);
-          }
-          else {
-            setFan(false);
-          }
+          Serial.println(autoFanState ? "Automatic Control: Fan ON"
+                                      : "Automatic Control: Fan OFF");
+          setFan(autoFanState);
         }
 
       }
 
-      // Temperature has crossed 30 C
-      else if (aboveThreshold != wasAboveThreshold) {
+      // Automatic state changed -> return control to automatic mode
+      else if (autoFanState != previousAutoState) {
 
-        wasAboveThreshold = aboveThreshold;
+        Serial.println("Hysteresis threshold crossed!");
 
-        Serial.println("Temperature threshold changed!");
-
-        // Return control to automatic mode
         manualOverride = false;
 
-        if (aboveThreshold) {
-
-          Serial.println("Temperature above 30 C!");
+        if (autoFanState) {
+          Serial.println("Temp > 30 C or Humidity > 70 %");
           Serial.println("Automatic Control: Fan ON");
-
-          setFan(true);
-
         }
-
         else {
-
-          Serial.println("Temperature at or below 30 C!");
+          Serial.println("Temp <= 29 C and Humidity <= 65 %");
           Serial.println("Automatic Control: Fan OFF");
-
-          setFan(false);
-
         }
+
+        setFan(autoFanState);
 
       }
 
       // Normal automatic operation
       else if (!manualOverride) {
 
-        if (aboveThreshold && !fanOn) {
-
-          Serial.println("Automatic Control: Fan ON");
-          setFan(true);
-
-        }
-
-        else if (!aboveThreshold && fanOn) {
-
-          Serial.println("Automatic Control: Fan OFF");
-          setFan(false);
-
+        if (fanOn != autoFanState) {
+          Serial.println(autoFanState ? "Automatic Control: Fan ON"
+                                      : "Automatic Control: Fan OFF");
+          setFan(autoFanState);
         }
 
       }
@@ -256,7 +239,6 @@ void loop() {
       else {
         Serial.println("Control Mode: AUTOMATIC");
       }
-
     }
   }
 }
